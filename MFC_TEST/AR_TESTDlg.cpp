@@ -59,6 +59,18 @@ CARTESTDlg::CARTESTDlg(CWnd* pParent /*=nullptr*/)
 	m_hIcon = AfxGetApp()->LoadIcon(IDR_MAINFRAME);
 	m_pComboPort = nullptr; // 멤버 변수 초기화
 	m_pComboBaud = nullptr; // 멤버 변수 초기화
+
+	// MySQL 멤버 변수 초기화
+	m_pMySqlDriver = nullptr;
+	m_pMySqlConnection = nullptr;
+	m_pMySqlPstmt = nullptr;
+}
+
+CARTESTDlg::~CARTESTDlg()
+{
+	// 데이터베이스 연결 해제
+	delete m_pMySqlPstmt;
+	delete m_pMySqlConnection;
 }
 
 void CARTESTDlg::DoDataExchange(CDataExchange* pDX)
@@ -73,6 +85,7 @@ BEGIN_MESSAGE_MAP(CARTESTDlg, CDialogEx)
 	ON_BN_CLICKED(IDC_BUTTON_CONNECT, &CARTESTDlg::OnBnClickedButtonConnect)
 	ON_BN_CLICKED(IDC_BUTTON_DISCONNECT, &CARTESTDlg::OnBnClickedButtonDisconnect)
 	ON_BN_CLICKED(IDC_BUTTON_SEND, &CARTESTDlg::OnBnClickedButtonSend)
+	ON_WM_TIMER()
 END_MESSAGE_MAP()
 
 
@@ -127,6 +140,37 @@ BOOL CARTESTDlg::OnInitDialog()
 	m_pComboBaud->AddString(_T("57600"));
 	m_pComboBaud->AddString(_T("115200"));
 	m_pComboBaud->SetCurSel(4); // 기본값 115200
+
+	SetTimer(1, 100, NULL);
+
+	try {
+		// MySQL 드라이버 가져오기
+		m_pMySqlDriver = get_driver_instance();
+		// MySQL 서버에 연결
+		m_pMySqlConnection = m_pMySqlDriver->connect("tcp://127.0.0.1:3306", "root", "1234");
+		m_pMySqlConnection->setClientOption("characterSetResults", "utf8mb4");
+		m_pMySqlConnection->setClientOption("characterSetClient", "utf8mb4");
+		m_pMySqlConnection->setClientOption("characterSetConnection", "utf8mb4");
+		// 사용할 데이터베이스 선택
+		m_pMySqlConnection->setSchema("ar_test_db");
+		// Auto Commit 활성화
+		m_pMySqlConnection->setAutoCommit(true);
+
+		// 테이블이 없으면 생성
+		std::unique_ptr<sql::Statement> stmt(m_pMySqlConnection->createStatement());
+		stmt->execute("CREATE TABLE IF NOT EXISTS serial_logs (id INT AUTO_INCREMENT PRIMARY KEY, timestamp DATETIME, message VARCHAR(1024))");
+
+		// INSERT를 위한 PreparedStatement 준비
+		m_pMySqlPstmt = m_pMySqlConnection->prepareStatement("INSERT INTO serial_logs(timestamp, message) VALUES (?, ?)");
+
+		AfxMessageBox(_T("DB 초기화 성공!")); // <--- 디버깅용 메시지 추가
+
+	} catch (sql::SQLException &e) {
+		CString strError;
+		strError.Format(_T("MySQL Error: %s"), CString(e.what()));
+		MessageBox(strError, _T("DB Connection Error"), MB_OK | MB_ICONERROR);
+		return FALSE; // DB 연결 실패 시 다이얼로그 종료
+	}
 
 	return TRUE;  // 포커스를 컨트롤에 설정하지 않으면 TRUE를 반환합니다.
 }
@@ -245,4 +289,63 @@ void CARTESTDlg::OnBnClickedButtonSend()
 	{
 		MessageBox(_T("COM 포트가 연결되지 않았습니다."), _T("오류"), MB_OK | MB_ICONERROR);
 	}
+}
+
+void CARTESTDlg::OnTimer(UINT_PTR nIDEvent)
+{
+	if (nIDEvent == 1 && m_serialPort.IsOpened())
+	{
+		char data[1024];
+		int len = m_serialPort.Read(data, sizeof(data) - 1);
+		if (len > 0)
+		{
+			data[len] = '\0';
+
+			// Convert received char* to CString
+			USES_CONVERSION; // ATL 문자열 변환 매크로 활성화
+			CString strReceived(CA2W(data, CP_UTF8)); // ← UTF-8 → 유니코드 변환
+
+			// Get current time
+			CTime time = CTime::GetCurrentTime();
+			CString strTime = time.Format(_T("[%Y-%m-%d %H:%M:%S] "));
+
+			// Format the log message
+			CString strLog;
+			strLog.Format(_T("%s%s\r\n"), strTime, strReceived);
+
+			// Append to the edit control
+			CEdit* pEdit = (CEdit*)GetDlgItem(IDC_EDIT_RECEIVE);
+			if (pEdit)
+			{
+				int nLength = pEdit->GetWindowTextLength();
+				pEdit->SetSel(nLength, nLength);
+				pEdit->ReplaceSel(strLog);
+			}
+
+			// Save to MySQL Database
+			if (m_pMySqlPstmt) {
+				try {
+					// CString을 std::string으로 변환하기 위해 CT2A 사용
+					CString strTimestamp = time.Format(_T("%Y-%m-%d %H:%M:%S"));
+					CT2A ts_ascii(strTimestamp);
+					CT2A msg_ascii(strReceived, CP_UTF8);  // ✅ UTF-8로 변환 지정
+
+
+					// PreparedStatement에 변환된 값 설정
+					m_pMySqlPstmt->setString(1, ts_ascii.m_psz);
+					m_pMySqlPstmt->setString(2, msg_ascii.m_psz);
+
+					// 쿼리 실행
+					m_pMySqlPstmt->execute();
+				}
+				catch (sql::SQLException& e) {
+					// DB 저장 실패 시 에러를 출력합니다.
+					CString strError;
+					strError.Format(_T("MySQL Save Error: %s"), CString(e.what()));
+					AfxMessageBox(strError);
+				}
+			}
+		}
+	}
+	CDialogEx::OnTimer(nIDEvent);
 }

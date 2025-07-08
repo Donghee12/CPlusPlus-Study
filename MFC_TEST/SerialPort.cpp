@@ -38,13 +38,12 @@ BOOL CSerialPort::Open(int nPort, int nBaud)
     dcb.StopBits = ONESTOPBIT;
     SetCommState(m_hComm, &dcb);
 
-    COMMTIMEOUTS timeouts;
-    GetCommTimeouts(m_hComm, &timeouts);
-    timeouts.ReadIntervalTimeout = 50;
-    timeouts.ReadTotalTimeoutConstant = 50;
-    timeouts.ReadTotalTimeoutMultiplier = 10;
-    timeouts.WriteTotalTimeoutConstant = 50;
-    timeouts.WriteTotalTimeoutMultiplier = 10;
+    COMMTIMEOUTS timeouts = { 0 };
+    timeouts.ReadIntervalTimeout = MAXDWORD;
+    // timeouts.ReadTotalTimeoutConstant = 0;
+    // timeouts.ReadTotalTimeoutMultiplier = 0;
+    // timeouts.WriteTotalTimeoutConstant = 50;
+    // timeouts.WriteTotalTimeoutMultiplier = 10;
     SetCommTimeouts(m_hComm, &timeouts);
 
     return TRUE;
